@@ -3,14 +3,13 @@ run-name: Release ${{ github.ref_name }}
 on:
   push:
     branches:
-      - 'main'
+      - "main"
 
 env:
   #rust-musl-cross:x86_64-musl
   RUST_MUSL_CROSS_IMAGE: messense/rust-musl-cross@sha256:68b86bc7cb2867259e6b233415a665ff4469c28b57763e78c3bfea1c68091561
 
 jobs:
-
   tag:
     runs-on: ubuntu-latest
     permissions:
@@ -22,7 +21,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-tags: 'true'
+          fetch-tags: "true"
           fetch-depth: 0
 
       - name: Versions
@@ -117,6 +116,20 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Get latest linux LLVM release artifact
+        id: get-llvm-artifact
+        uses: actions/github-script@v7
+        with:
+          result-encoding: string
+          script: |
+            const getReleaseArtifact = require(".github/workflows/get-release-artifact.js");
+            return getReleaseArtifact({ 
+              octokit, 
+              context, 
+              releasePrefix: "llvm-",
+              artifactSuffix: "-linux"
+            });
+
       - uses: actions/checkout@v4
 
       - name: install linux deps
@@ -141,57 +154,10 @@ jobs:
           echo "ninja:" && ninja --version
           echo "clang:" && clang --version
 
-      - name: build revive-llvm
-        run: make install-llvm-builder
-
-      # musl LLVM
-
-      - name: llvm-musl-cache restore
-        id: llvm-musl-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: target-llvm/musl/target-final
-          key: llvm-linux-musl-${{ hashFiles('crates/solidity/**') }}      
-
-      - name: Build musl LLVM
-        if: steps.llvm-musl-cache.outputs.cache-hit != 'true'
+      - name: download llvm
         run: |
-          revive-llvm --target-env musl clone
-          revive-llvm --target-env musl build --llvm-projects lld --llvm-projects clang
-
-      - name: llvm-musl-cache save
-        if: steps.llvm-musl-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: target-llvm/musl/target-final
-          key: llvm-linux-musl-${{ hashFiles('crates/solidity/**') }}          
-
-      # emscripten LLVM
-
-      - name: llvm-emscripten-cache restore
-        id: llvm-emscripten-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            target-llvm/emscripten/target-final
-            emsdk
-          key: llvm-linux-emscripten-${{ hashFiles('crates/solidity/**') }}      
-
-      - name: Build emscripten LLVM
-        if: steps.llvm-emscripten-cache.outputs.cache-hit != 'true'
-        run: |
-          revive-llvm --target-env emscripten clone
-          source emsdk/emsdk_env.sh
-          revive-llvm --target-env emscripten build --llvm-projects lld
-
-      - name: llvm-emscripten-cache save
-        if: steps.llvm-emscripten-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            target-llvm/emscripten/target-final
-            emsdk
-          key: llvm-linux-emscripten-${{ hashFiles('crates/solidity/**') }}
+          curl -o llvm.tar.gz "${{ steps.get-llvm-artifact.outputs.result }}"
+          tar -xvf llvm.tar.gz
 
       # Build revive
 
@@ -219,7 +185,7 @@ jobs:
       - name: Set Up Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: "20"          
+          node-version: "20"
 
       - name: build wasm
         run: |
@@ -235,10 +201,10 @@ jobs:
           node -e "
           const soljson = require('solc/soljson');
           const createRevive = require('./target/wasm32-unknown-emscripten/release/resolc.js');
-          
+
           const compiler = createRevive();
           compiler.soljson = soljson;
-          
+
           const standardJsonInput = 
           {
             language: 'Solidity',
@@ -249,16 +215,16 @@ jobs:
             },
             settings: { optimizer: { enabled: false } }
           };
-          
+
           compiler.writeToStdin(JSON.stringify(standardJsonInput));
           compiler.callMain(['--standard-json']);
-          
+
           // Collect output
           const stdout = compiler.readFromStdout();
           const stderr = compiler.readFromStderr();
-          
+
           if (stderr) { console.error(stderr); process.exit(1); }
-          
+
           let out = JSON.parse(stdout);
           let bytecode = out.contracts['MyContract.sol']['MyContract'].evm.bytecode.object
           console.log(bytecode);
