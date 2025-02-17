@@ -3,7 +3,8 @@ run-name: Release ${{ github.ref_name }}
 on:
   push:
     branches:
-      - 'main'
+      - "main"
+      - "yuri/test-llvm-release"
 
 concurrency:
   group: ${{ github.ref }}-${{ github.workflow }}
@@ -14,7 +15,6 @@ env:
   RUST_MUSL_CROSS_IMAGE: messense/rust-musl-cross@sha256:68b86bc7cb2867259e6b233415a665ff4469c28b57763e78c3bfea1c68091561
 
 jobs:
-
   #
   #
   #
@@ -29,7 +29,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-tags: 'true'
+          fetch-tags: "true"
           fetch-depth: 0
 
       - name: Versions
@@ -51,29 +51,96 @@ jobs:
             fi
           echo "TAG=$TAG" >> $GITHUB_OUTPUT
 
+  build-macos:
+    strategy:
+      matrix:
+        os: [macos-14, macos-13]
+        include:
+          - os: macos-13
+            arch: x64
+          - os: macos-14
+            arch: arm64
+    # if: ${{ needs.tag.outputs.TAG == 'new' }}
+    runs-on: ${{ matrix.os }}
+    name: "build-macos-${{ matrix.arch }}"
+    needs: [tag]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get latest macos ${{ matrix.arch }} LLVM release artifact
+        id: get-llvm-artifact
+        uses: actions/github-script@v7
+        with:
+          result-encoding: string
+          script: |
+            const getReleaseArtifact = require("./.github/workflows/get-release-artifact.js");
+            return await getReleaseArtifact({ 
+              octokit: github, 
+              context, 
+              releasePrefix: "llvm-",
+              artifactSuffix: "-macos-${{ matrix.arch }}"
+            });
+
+      - name: Install Rust stable toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          components: rust-src
+          target: wasm32-unknown-emscripten
+
+      - name: install macos deps
+        run: |
+          brew install ninja
+
+      - name: versions
+        run: |
+          rustup show
+          cargo --version
+          cmake --version
+          echo "bash:" && bash --version
+          echo "ninja:" && ninja --version
+          echo "clang:" && clang --version
+
+      - name: download llvm
+        run: |
+          curl -L -o llvm.tar.gz "${{ steps.get-llvm-artifact.outputs.result }}"
+          tar -xvf llvm.tar.gz
+
+      - name: build revive
+        run: |
+          export LLVM_SYS_181_PREFIX=$PWD/target-llvm/gnu/target-final
+          make install-bin
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: "revive-macos-${{ matrix.arch }}"
+          path: |
+            ./target/release/resolc
+          retention-days: 1
   #
   #
   #
   build-linux-all:
-    if: ${{ needs.tag.outputs.TAG == 'new' }}
+    # if: ${{ needs.tag.outputs.TAG == 'new' }}
     runs-on: parity-large
     needs: [tag]
     steps:
+      - uses: actions/checkout@v4
+
       - name: Get latest linux LLVM release artifact
         id: get-llvm-artifact
         uses: actions/github-script@v7
         with:
           result-encoding: string
           script: |
-            const getReleaseArtifact = require(".github/workflows/get-release-artifact.js");
-            return getReleaseArtifact({ 
-              octokit, 
-              context, 
+            const getReleaseArtifact = require("./.github/workflows/get-release-artifact.js")
+            return await getReleaseArtifact({
+              octokit: github,
+              context,
               releasePrefix: "llvm-",
               artifactSuffix: "-linux"
-            });
-
-      - uses: actions/checkout@v4
+            })
 
       - name: install linux deps
         run: |
@@ -99,7 +166,7 @@ jobs:
 
       - name: download llvm
         run: |
-          curl -o llvm.tar.gz "${{ steps.get-llvm-artifact.outputs.result }}"
+          curl -L -o llvm.tar.gz "${{ steps.get-llvm-artifact.outputs.result }}"
           tar -xvf llvm.tar.gz
 
       # Build revive
@@ -132,6 +199,8 @@ jobs:
 
       - name: build wasm
         run: |
+          make install-llvm-builder
+          revive-llvm --target-env emscripten clone
           export LLVM_SYS_181_PREFIX=$PWD/target-llvm/musl/target-final
           export REVIVE_LLVM_TARGET_PREFIX=$PWD/target-llvm/emscripten/target-final
           source emsdk/emsdk_env.sh
@@ -226,12 +295,11 @@ jobs:
             echo EOF
           } >> "$GITHUB_OUTPUT"
 
-
       - name: Create release
         id: create_release
         env:
-         releaseNotes: ${{ steps.get-notes.outputs.releaseNotes }}
-         version: ${{ needs.tag.outputs.PKG_VER }}
+          releaseNotes: ${{ steps.get-notes.outputs.releaseNotes }}
+          version: ${{ needs.tag.outputs.PKG_VER }}
         uses: actions/github-script@v7
         with:
           result-encoding: string
@@ -260,7 +328,6 @@ jobs:
     runs-on: ubuntu-22.04
     needs: [create-release]
     steps:
-
       - name: Download Artifact
         uses: actions/download-artifact@v4
         with:
